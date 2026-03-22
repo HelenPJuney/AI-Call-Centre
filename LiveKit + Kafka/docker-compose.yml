@@ -1,0 +1,75 @@
+# docker-compose.yml — Kafka (via Redpanda) + LiveKit for local testing
+#
+# Start everything:   docker compose up -d
+# Stop everything:    docker compose down
+# View logs:          docker compose logs -f
+# Kafka shell:        docker compose exec kafka rpk topic list
+#
+# After starting, your endpoints are:
+#   Kafka broker:     localhost:9092
+#   LiveKit server:   ws://localhost:7880
+#   LiveKit API key:  devkey
+#   LiveKit secret:   devsecret
+
+services:
+
+  # ── Kafka (Redpanda — drop-in Kafka replacement, no JVM, works on Windows) ──
+  kafka:
+    image: redpandadata/redpanda:latest
+    container_name: kafka
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka topic auto-create on startup ────────────────────────────────────
+  kafka-setup:
+    image: redpandadata/redpanda:latest
+    container_name: kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: >-
+      rpk --brokers kafka:9092 topic create call_requests    --partitions 4 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create call_assignments --partitions 4 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create gpu_capacity     --partitions 1 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create call_started     --partitions 1 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create call_completed   --partitions 1 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create call_failed      --partitions 1 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create worker_heartbeat --partitions 1 --replicas 1 2>/dev/null || true &&
+      rpk --brokers kafka:9092 topic create call_dlq         --partitions 1 --replicas 1 2>/dev/null || true &&
+      echo All Kafka topics created.
+    restart: "no"
+
+  # ── LiveKit server ────────────────────────────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: livekit
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      - LIVEKIT_KEYS=devkey:devsecret
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7880/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  kafka_data:
